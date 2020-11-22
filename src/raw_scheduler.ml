@@ -538,6 +538,7 @@ Async will be unable to timeout with sub-millisecond precision.|}]
       end
       in
       (module W : File_descr_watcher.S), Some timerfd
+    | Io_uring -> failwith "TOIMPL"
   in
   let kernel_scheduler = Kernel_scheduler.t () in
   let t =
