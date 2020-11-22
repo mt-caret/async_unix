@@ -21,8 +21,11 @@ type t =
 type 'a additional_create_args = 'a
 
 let create ~num_file_descrs ~handle_fd_read_ready ~handle_fd_write_ready =
-  (* TOIMPL: this constant probably belongs in Config.io_uring_entries or something... *)
-  { io_uring = Io_uring.create ~entries:(Int63.of_int 512)
+  let max_submission_entries =
+    Io_uring_max_submission_entries.raw Config.io_uring_max_submission_entries
+    |> Int63.of_int
+  in
+  { io_uring = Io_uring.create ~max_submission_entries
   ; handle_fd_read_ready
   ; handle_fd_write_ready
   ; flags_by_fd =
@@ -55,6 +58,7 @@ let invariant t : unit =
         ~io_uring_file_descr_watcher:(t : t)]
 ;;
 
+(* TOIMPL: maybe instead of raising when sq is full, we should submit and retry? *)
 let set t file_descr desired =
   let actual_flags = Table.find t.flags_by_fd file_descr in
   let desired_flags =
@@ -68,14 +72,26 @@ let set t file_descr desired =
   | None, None -> ()
   | None, Some d ->
       let sq_full = Io_uring.poll_add t.io_uring file_descr d in
-      if sq_full then raise_s [%message "Io_uring submission queue full" (t : t)];
+      if sq_full then
+        raise_s
+          [%message
+            "Io_uring_file_descr_watcher.set: submission queue is full"
+            (t : t)];
   | Some a, None ->
       let sq_full = Io_uring.poll_remove t.io_uring file_descr a in
-      if sq_full then raise_s [%message "Io_uring submission queue full" (t : t)];
+      if sq_full then
+        raise_s
+          [%message
+            "Io_uring_file_descr_watcher.set: submission queue is full"
+            (t : t)];
   | Some a, Some d ->
       if not (Flags.equal a d) then (
         let sq_full = Io_uring.poll_add t.io_uring file_descr d in
-        if sq_full then raise_s [%message "Io_uring submission queue full" (t : t)])
+        if sq_full then
+          raise_s
+            [%message
+              "Io_uring_file_descr_watcher.set: submission queue is full"
+              (t : t)])
 ;;
 
 let iter t ~f =
@@ -101,8 +117,20 @@ let io_uring_wait (type a) (io_uring : Io_uring.t) (timeout : a Timeout.t) (span
   | After -> Io_uring.wait_timeout_after io_uring span_or_unit
 ;;
 
-(* TOIMPL: rearm polling here *)
-let thread_safe_check t () timeout span_or_unit = io_uring_wait t.io_uring timeout span_or_unit
+let thread_safe_check t () timeout span_or_unit =
+  let cqe_list = io_uring_wait t.io_uring timeout span_or_unit in
+  List.iter cqe_list ~f:(fun cqe ->
+    let sq_full =
+      Io_uring.poll_add t.io_uring
+        (Io_uring.Tag.file_descr cqe.user_data)
+        (Io_uring.Tag.flags cqe.user_data)
+    in
+    if sq_full then
+      raise_s
+        [%message
+          "Io_uring_file_descr_watcher.thread_safe_check: submission queue is full"
+          (t : t)]);
+  cqe_list
 
 let post_check t (check_result : Check_result.t) =
   List.iter check_result ~f:(fun cqe ->
@@ -119,4 +147,3 @@ let post_check t (check_result : Check_result.t) =
       Io_uring.Tag.file_descr cqe.user_data
         |> t.handle_fd_read_ready)
 ;;
-
