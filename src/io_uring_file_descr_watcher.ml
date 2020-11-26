@@ -60,7 +60,7 @@ let invariant t : unit =
 
 (* TOIMPL: maybe instead of raising when sq is full, we should submit and retry? *)
 let set t file_descr desired =
-  print_s [%message "set: " (file_descr : File_descr.t) (desired : bool Read_write.t)];
+  (* print_s [%message "set: " (file_descr : File_descr.t) (desired : bool Read_write.t)]; *)
   let actual_flags = Table.find t.flags_by_fd file_descr in
   let desired_flags =
     match desired.read, desired.write with
@@ -117,25 +117,25 @@ end
 let io_uring_wait (type a) (io_uring : Io_uring.t) (timeout : a Timeout.t) (span_or_unit : a) =
   match timeout with
   | Never -> 
-      let num_submitted = Io_uring.submit io_uring in
-      print_s [%message "submitted (timeout:Never)" (num_submitted : Int63.t)];
+      let _num_submitted = Io_uring.submit io_uring in
+      (* print_s [%message "submitted (timeout:Never)" (num_submitted : Int63.t)]; *)
       Io_uring.wait io_uring ~timeout:`Never
   | Immediately ->
-      let num_submitted = Io_uring.submit io_uring in
-      print_s [%message "submitted (timeout:Immediately)" (num_submitted : Int63.t)];
+      let _num_submitted = Io_uring.submit io_uring in
+      (* print_s [%message "submitted (timeout:Immediately)" (num_submitted : Int63.t)]; *)
       Io_uring.wait io_uring ~timeout:`Immediately
   | After -> Io_uring.wait_timeout_after io_uring span_or_unit
 ;;
 
 let thread_safe_check t () timeout span_or_unit =
-  print_s [%message "thread_safe_check: " (t.flags_by_fd : (File_descr.t, Flags.t) Table.t)];
+  (* print_s [%message "thread_safe_check: " (t.flags_by_fd : (File_descr.t, Flags.t) Table.t)]; *)
   let cqe_list = io_uring_wait t.io_uring timeout span_or_unit in
   List.filter cqe_list ~f:(fun cqe ->
     let file_descr = (Io_uring.Tag.file_descr cqe.user_data) in
     let still_in_table = Table.mem t.flags_by_fd file_descr in
     if still_in_table then (
       let flags = (Io_uring.Tag.flags cqe.user_data) in
-      print_s [%message "rearming poll" (file_descr : File_descr.t) (flags : Flags.t)];
+      (* print_s [%message "rearming poll" (file_descr : File_descr.t) (flags : Flags.t)]; *)
       let sq_full =
         Io_uring.poll_add t.io_uring file_descr flags
       in
@@ -143,9 +143,9 @@ let thread_safe_check t () timeout span_or_unit =
         raise_s
           [%message
             "Io_uring_file_descr_watcher.thread_safe_check: submission queue is full"
-            (t : t)])
-      else
-        print_s [%message "skipping rearm as no longer in table"];
+            (t : t)]);
+      (* else
+        print_s [%message "skipping rearm as no longer in table"]; *)
       still_in_table)
 
 let post_check t (check_result : Check_result.t) =
