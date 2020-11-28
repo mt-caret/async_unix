@@ -151,10 +151,6 @@ let thread_safe_check t () timeout span_or_unit =
 let post_check t (check_result : Check_result.t) =
   List.iter check_result ~f:(fun cqe ->
     let flags = Int63.to_int_exn cqe.ret |> Flags.of_int in
-    if Flags.do_intersect flags Flags.err then
-      raise_s [%message "error found in cqe list" (check_result : Check_result.t)]);
-  List.iter check_result ~f:(fun cqe ->
-    let flags = Int63.to_int_exn cqe.ret |> Flags.of_int in
     if Flags.do_intersect flags Flags.out then
       Io_uring.Tag.file_descr cqe.user_data
         |> t.handle_fd_write_ready);
