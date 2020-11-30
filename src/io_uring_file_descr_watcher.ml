@@ -23,9 +23,13 @@ type 'a additional_create_args = 'a
 let create ~num_file_descrs ~handle_fd_read_ready ~handle_fd_write_ready =
   let max_submission_entries =
     Io_uring_max_submission_entries.raw Config.io_uring_max_submission_entries
-    |> Int63.of_int
+    |> Int32.of_int_exn
   in
-  { io_uring = Io_uring.create ~max_submission_entries
+  let max_completion_entries =
+    Io_uring_max_completion_entries.raw Config.io_uring_max_completion_entries
+    |> Int32.of_int_exn
+  in
+  { io_uring = Io_uring.create ~max_submission_entries ~max_completion_entries
   ; handle_fd_read_ready
   ; handle_fd_write_ready
   ; flags_by_fd =
