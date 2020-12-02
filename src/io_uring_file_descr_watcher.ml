@@ -133,32 +133,34 @@ let io_uring_wait (type a) (io_uring : _ Io_uring.t) (timeout : a Timeout.t) (sp
 
 let thread_safe_check t () timeout span_or_unit =
   (* print_s [%message "thread_safe_check: " (t.flags_by_fd : (File_descr.t, Flags.t) Table.t)]; *)
-  let cqe_list = io_uring_wait t.io_uring timeout span_or_unit in
-  List.filter cqe_list ~f:(fun cqe ->
-    let file_descr = (Io_uring.User_data.file_descr cqe.user_data) in
-    let still_in_table = Table.mem t.flags_by_fd file_descr in
-    if still_in_table then (
-      let flags = (Io_uring.User_data.flags cqe.user_data) in
-      (* print_s [%message "rearming poll" (file_descr : File_descr.t) (flags : Flags.t)]; *)
-      let sq_full =
-        Io_uring.poll_add t.io_uring file_descr flags
-      in
-      if sq_full then
-        raise_s
-          [%message
-            "Io_uring_file_descr_watcher.thread_safe_check: submission queue is full"
-            (t : t)]);
-      (* else
-        print_s [%message "skipping rearm as no longer in table"]; *)
-      still_in_table)
+  io_uring_wait t.io_uring timeout span_or_unit
 
 let post_check t (check_result : Check_result.t) =
-  List.iter check_result ~f:(fun cqe ->
+  let cqe_list =
+    List.filter check_result ~f:(fun cqe ->
+      let file_descr = Io_uring.User_data.file_descr cqe.user_data in
+      let still_in_table = Table.mem t.flags_by_fd file_descr in
+      if still_in_table then (
+        let flags = (Io_uring.User_data.flags cqe.user_data) in
+        (* print_s [%message "rearming poll" (file_descr : File_descr.t) (flags : Flags.t)]; *)
+        let sq_full =
+          Io_uring.poll_add t.io_uring file_descr flags
+        in
+        if sq_full then
+          raise_s
+            [%message
+              "Io_uring_file_descr_watcher.thread_safe_check: submission queue is full"
+              (t : t)]);
+        (* else
+          print_s [%message "skipping rearm as no longer in table"]; *)
+        still_in_table)
+  in
+  List.iter cqe_list ~f:(fun cqe ->
     let flags = Int63.to_int_exn cqe.ret |> Flags.of_int in
     if Flags.do_intersect flags Flags.out then
       Io_uring.User_data.file_descr cqe.user_data
         |> t.handle_fd_write_ready);
-  List.iter check_result ~f:(fun cqe ->
+  List.iter cqe_list ~f:(fun cqe ->
     let flags = Int63.to_int_exn cqe.ret |> Flags.of_int in
     if Flags.do_intersect flags Flags.in_ then
       Io_uring.User_data.file_descr cqe.user_data
