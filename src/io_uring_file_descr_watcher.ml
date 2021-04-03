@@ -2,7 +2,6 @@ open Core
 open Import
 open File_descr_watcher_intf
 open Read_write.Export
-module Io_uring = Linux_ext.Io_uring
 module Table = Bounded_int_table
 
 module Flags = struct
