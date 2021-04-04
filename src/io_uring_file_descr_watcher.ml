@@ -10,25 +10,40 @@ module Flags = struct
   let in_out = in_ + out
 end
 
-
 type t =
-  { io_uring: ([ `Poll ] Io_uring.t [@sexp.opaque])
-  ; rearm_polling : user_data:[ `Poll ] Io_uring.User_data.t -> res:int -> flags:int -> unit
-  ; handle_fd_read_ready : user_data:[ `Poll ] Io_uring.User_data.t -> res:int -> flags:int -> unit
-  ; handle_fd_write_ready : user_data:[ `Poll ] Io_uring.User_data.t -> res:int -> flags:int -> unit
+  { io_uring: (int Io_uring.t [@sexp.opaque])
+  ; rearm_polling : user_data:int -> res:int -> flags:int -> unit
+  ; handle_fd_read_ready : user_data:int -> res:int -> flags:int -> unit
+  ; handle_fd_write_ready : user_data:int -> res:int -> flags:int -> unit
   ; flags_by_fd : (File_descr.t, Flags.t) Table.t;
   } [@@deriving sexp_of, fields]
 
 type 'a additional_create_args = 'a
 
+let unpack_file_descr ~user_data =
+  Int.bit_and user_data (0xffff_ffff) |> File_descr.of_int
+;;
+
+let unpack_flags ~user_data =
+  Int.shift_right user_data 32
+  |> Io_uring.Flags.of_int
+;;
+
+let pack_user_data ~file_descr ~flags =
+  let user_data =
+    Int.shift_left (Io_uring.Flags.to_int_exn flags) 32
+    |> Int.bit_or (File_descr.to_int file_descr)
+  in
+  (* print_s [%message "packed user_data" (user_data : int) (file_descr : File_descr.t) (flags : Flags.t)]; *)
+  user_data
+;;
+
 let create ~num_file_descrs ~handle_fd_read_ready ~handle_fd_write_ready =
   let max_submission_entries =
     Io_uring_max_submission_entries.raw Config.io_uring_max_submission_entries
-    |> Int32.of_int_exn
   in
   let max_completion_entries =
     Io_uring_max_completion_entries.raw Config.io_uring_max_completion_entries
-    |> Int32.of_int_exn
   in
   let io_uring = Io_uring.create ~max_submission_entries ~max_completion_entries in
   let flags_by_fd =
@@ -40,25 +55,28 @@ let create ~num_file_descrs ~handle_fd_read_ready ~handle_fd_write_ready =
   in
   { io_uring
   ; rearm_polling = (fun ~user_data ~res ~flags:_ ->
-    let file_descr = Io_uring.User_data.file_descr user_data in
+    let file_descr = unpack_file_descr ~user_data in
+    let flags = unpack_flags ~user_data in
+    (* print_s [%message "rearm-polling" (user_data : int) (file_descr : File_descr.t) (flags : Flags.t) (flags_by_fd : (File_descr.t, Flags.t) Table.t)]; *)
     if Table.mem flags_by_fd file_descr then (
-      let flags = Io_uring.User_data.flags user_data in
       (* print_s [%message "rearming poll" (file_descr : File_descr.t) (flags : Flags.t)]; *)
       let sq_full =
-        Io_uring.poll_add io_uring file_descr flags
+        Io_uring.poll_add io_uring file_descr flags user_data
       in
       if sq_full then
         raise_s
           [%message
             "Io_uring_file_descr_watcher.thread_safe_check: submission queue is full"]))
   ; handle_fd_read_ready = (fun ~user_data ~res ~flags:_ ->
-    let file_descr = Io_uring.User_data.file_descr user_data in
+    let file_descr = unpack_file_descr ~user_data in
+    (* print_s [%message "handle-fd-read-ready" (file_descr : File_descr.t)]; *)
     if Table.mem flags_by_fd file_descr then (
       let flags = Flags.of_int res in
       if Flags.do_intersect flags Flags.in_ then
         handle_fd_read_ready file_descr))
   ; handle_fd_write_ready = (fun ~user_data ~res ~flags:_ ->
-    let file_descr = Io_uring.User_data.file_descr user_data in
+    let file_descr = unpack_file_descr ~user_data in
+    (* print_s [%message "handle-fd-write-ready" (file_descr : File_descr.t)]; *)
     if Table.mem flags_by_fd file_descr then (
       let flags = Flags.of_int res in
       if Flags.do_intersect flags Flags.out then
@@ -104,7 +122,10 @@ let set t file_descr desired =
   | None, None -> ()
   | None, Some d ->
       Table.set t.flags_by_fd ~key:file_descr ~data:d;
-      let sq_full = Io_uring.poll_add t.io_uring file_descr d in
+      let sq_full =
+        pack_user_data ~file_descr ~flags:d
+        |> Io_uring.poll_add t.io_uring file_descr d
+      in
       if sq_full then
         raise_s
           [%message
@@ -112,16 +133,22 @@ let set t file_descr desired =
             (t : t)];
   | Some a, None ->
       Table.remove t.flags_by_fd file_descr;
-      let sq_full = Io_uring.poll_remove t.io_uring file_descr a in
+      (*let sq_full =
+        pack_user_data ~file_descr ~flags:a
+        |> Io_uring.poll_remove t.io_uring file_descr a
+      in
       if sq_full then
         raise_s
           [%message
             "Io_uring_file_descr_watcher.set: submission queue is full"
-            (t : t)];
+            (t : t)];*)
   | Some a, Some d ->
       if not (Flags.equal a d) then (
         Table.set t.flags_by_fd ~key:file_descr ~data:d;
-        let sq_full = Io_uring.poll_add t.io_uring file_descr d in
+        let sq_full =
+          pack_user_data ~file_descr ~flags:d
+          |> Io_uring.poll_add t.io_uring file_descr d
+        in
         if sq_full then
           raise_s
             [%message
