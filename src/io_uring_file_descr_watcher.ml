@@ -15,7 +15,8 @@ type t =
   ; rearm_polling : user_data:int -> res:int -> flags:int -> unit
   ; handle_fd_read_ready : user_data:int -> res:int -> flags:int -> unit
   ; handle_fd_write_ready : user_data:int -> res:int -> flags:int -> unit
-  ; flags_by_fd : (File_descr.t, Flags.t) Table.t;
+  ; flags_by_fd : (File_descr.t, Flags.t) Table.t
+  ; tags_by_fd : (File_descr.t, int Io_uring.Tag.t) Table.t
   } [@@deriving sexp_of, fields]
 
 type 'a additional_create_args = 'a
@@ -53,6 +54,13 @@ let create ~num_file_descrs ~handle_fd_read_ready ~handle_fd_write_ready =
       ~sexp_of_key:File_descr.sexp_of_t
       ()
   in
+  let tags_by_fd =
+    Table.create
+      ~num_keys:num_file_descrs
+      ~key_to_int:File_descr.to_int
+      ~sexp_of_key:File_descr.sexp_of_t
+      ()
+  in
   { io_uring
   ; rearm_polling = (fun ~user_data ~res ~flags:_ ->
     let file_descr = unpack_file_descr ~user_data in
@@ -60,9 +68,10 @@ let create ~num_file_descrs ~handle_fd_read_ready ~handle_fd_write_ready =
     (* print_s [%message "rearm-polling" (user_data : int) (file_descr : File_descr.t) (flags : Flags.t) (flags_by_fd : (File_descr.t, Flags.t) Table.t)]; *)
     if Table.mem flags_by_fd file_descr then (
       (* print_s [%message "rearming poll" (file_descr : File_descr.t) (flags : Flags.t)]; *)
-      let sq_full =
+      let tag =
         Io_uring.poll_add io_uring file_descr flags user_data
       in
+      let sq_full = Io_uring.Tag.Option.is_none tag in
       if sq_full then
         raise_s
           [%message
@@ -82,6 +91,7 @@ let create ~num_file_descrs ~handle_fd_read_ready ~handle_fd_write_ready =
       if Flags.do_intersect flags Flags.out then
         handle_fd_write_ready file_descr))
   ; flags_by_fd
+  ; tags_by_fd
   }
 ;;
 
@@ -89,7 +99,7 @@ let reset_in_forked_process t = Io_uring.close t.io_uring
 
 let backend = Config.File_descr_watcher.Io_uring
 
-(* TOIMPL: no invariants, really? *)
+(* TOIMPL: ensure flags_by_fd and tags_by_fd stay in sync *)
 let invariant t : unit =
   try
     Fields.iter
@@ -98,6 +108,7 @@ let invariant t : unit =
       ~handle_fd_read_ready:ignore
       ~handle_fd_write_ready:ignore
       ~flags_by_fd:ignore
+      ~tags_by_fd:ignore
   with
   | exn ->
     raise_s
@@ -105,6 +116,17 @@ let invariant t : unit =
         "Io_uring_file_descr_watcher.invariant failed"
         (exn : exn)
         ~io_uring_file_descr_watcher:(t : t)]
+;;
+
+let set_tags_by_fd_or_raise t file_descr tag =
+  match%optional.Io_uring.Tag.Option tag with
+  | None ->
+    raise_s
+      [%message
+        "Io_uring_file_descr_watcher.set: submission queue is full"
+        (t : t)]
+  | Some tag ->
+      Table.set t.tags_by_fd ~key:file_descr ~data:tag
 ;;
 
 (* TOIMPL: maybe instead of raising when sq is full, we should submit and retry? *)
@@ -122,38 +144,27 @@ let set t file_descr desired =
   | None, None -> ()
   | None, Some d ->
       Table.set t.flags_by_fd ~key:file_descr ~data:d;
+      pack_user_data ~file_descr ~flags:d
+      |> Io_uring.poll_add t.io_uring file_descr d
+      |> set_tags_by_fd_or_raise t file_descr
+  | Some a, None ->
+      Table.remove t.flags_by_fd file_descr;
       let sq_full =
-        pack_user_data ~file_descr ~flags:d
-        |> Io_uring.poll_add t.io_uring file_descr d
+        Table.find_exn t.tags_by_fd file_descr
+        |> Io_uring.poll_remove t.io_uring
       in
       if sq_full then
         raise_s
           [%message
             "Io_uring_file_descr_watcher.set: submission queue is full"
             (t : t)];
-  | Some a, None ->
-      Table.remove t.flags_by_fd file_descr;
-      (*let sq_full =
-        pack_user_data ~file_descr ~flags:a
-        |> Io_uring.poll_remove t.io_uring file_descr a
-      in
-      if sq_full then
-        raise_s
-          [%message
-            "Io_uring_file_descr_watcher.set: submission queue is full"
-            (t : t)];*)
+      Table.remove t.tags_by_fd file_descr
   | Some a, Some d ->
       if not (Flags.equal a d) then (
         Table.set t.flags_by_fd ~key:file_descr ~data:d;
-        let sq_full =
-          pack_user_data ~file_descr ~flags:d
-          |> Io_uring.poll_add t.io_uring file_descr d
-        in
-        if sq_full then
-          raise_s
-            [%message
-              "Io_uring_file_descr_watcher.set: submission queue is full"
-              (t : t)])
+        pack_user_data ~file_descr ~flags:d
+        |> Io_uring.poll_add t.io_uring file_descr d
+        |> set_tags_by_fd_or_raise t file_descr)
 ;;
 
 let iter t ~f =
@@ -193,5 +204,5 @@ let post_check t (check_result : Check_result.t) =
   Io_uring.iter_completions t.io_uring ~f:t.rearm_polling;
   Io_uring.iter_completions t.io_uring ~f:t.handle_fd_write_ready;
   Io_uring.iter_completions t.io_uring ~f:t.handle_fd_read_ready;
-  Io_uring.Expert.clear_completions t.io_uring;
+  Io_uring.clear_completions t.io_uring;
 ;;
