@@ -186,12 +186,14 @@ end
 let io_uring_wait (type a) (io_uring : _ Io_uring.t) (timeout : a Timeout.t) (span_or_unit : a) =
   match timeout with
   | Never -> 
-      let _num_submitted = Io_uring.submit io_uring in
-      (* print_s [%message "submitted (timeout:Never)" (num_submitted : Int63.t)]; *)
+      let ret = Io_uring.submit io_uring in
+      if ret < 0 then
+        Unix.unix_error (-ret) "Io_uring_file_descr_watcher.io_uring_wait" "`Never";
       Io_uring.wait io_uring ~timeout:`Never
   | Immediately ->
-      let _num_submitted = Io_uring.submit io_uring in
-      (* print_s [%message "submitted (timeout:Immediately)" (num_submitted : Int63.t)]; *)
+      let ret = Io_uring.submit io_uring in
+      if ret < 0 then
+        Unix.unix_error (-ret) "Io_uring_file_descr_watcher.io_uring_wait" "`Immediately";
       Io_uring.wait io_uring ~timeout:`Immediately
   | After -> Io_uring.wait_timeout_after io_uring span_or_unit
 ;;
