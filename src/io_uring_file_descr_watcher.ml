@@ -5,7 +5,7 @@ open Read_write.Export
 module Table = Bounded_int_table
 
 module Flags = struct
-  include Io_uring.Flags
+  include Io_uring.Poll_flags
 
   let in_out = in_ + out
 end
@@ -27,12 +27,12 @@ let unpack_file_descr ~user_data =
 
 let unpack_flags ~user_data =
   Int.shift_right user_data 32
-  |> Io_uring.Flags.of_int
+  |> Io_uring.Poll_flags.of_int
 ;;
 
 let pack_user_data ~file_descr ~flags =
   let user_data =
-    Int.shift_left (Io_uring.Flags.to_int_exn flags) 32
+    Int.shift_left (Io_uring.Poll_flags.to_int_exn flags) 32
     |> Int.bit_or (File_descr.to_int file_descr)
   in
   (* print_s [%message "packed user_data" (user_data : int) (file_descr : File_descr.t) (flags : Flags.t)]; *)
