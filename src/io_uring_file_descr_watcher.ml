@@ -69,7 +69,7 @@ let create ~num_file_descrs ~handle_fd_read_ready ~handle_fd_write_ready =
     if Table.mem flags_by_fd file_descr then (
       (* print_s [%message "rearming poll" (file_descr : File_descr.t) (flags : Flags.t)]; *)
       let tag =
-        Io_uring.poll_add io_uring file_descr flags user_data
+        Io_uring.prepare_poll_add io_uring file_descr flags user_data
       in
       let sq_full = Io_uring.Tag.Option.is_none tag in
       if sq_full then
@@ -145,13 +145,13 @@ let set t file_descr desired =
   | None, Some d ->
       Table.set t.flags_by_fd ~key:file_descr ~data:d;
       pack_user_data ~file_descr ~flags:d
-      |> Io_uring.poll_add t.io_uring file_descr d
+      |> Io_uring.prepare_poll_add t.io_uring file_descr d
       |> set_tags_by_fd_or_raise t file_descr
   | Some a, None ->
       Table.remove t.flags_by_fd file_descr;
       let sq_full =
         Table.find_exn t.tags_by_fd file_descr
-        |> Io_uring.poll_remove t.io_uring
+        |> Io_uring.prepare_poll_remove t.io_uring
       in
       if sq_full then
         raise_s
@@ -163,7 +163,7 @@ let set t file_descr desired =
       if not (Flags.equal a d) then (
         Table.set t.flags_by_fd ~key:file_descr ~data:d;
         pack_user_data ~file_descr ~flags:d
-        |> Io_uring.poll_add t.io_uring file_descr d
+        |> Io_uring.prepare_poll_add t.io_uring file_descr d
         |> set_tags_by_fd_or_raise t file_descr)
 ;;
 
